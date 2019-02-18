@@ -3,13 +3,10 @@ package com.example.gps;
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.content.res.Resources;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
-import android.os.Build;
 import android.os.SystemClock;
 import android.support.v4.app.ActivityCompat;
 import android.support.v7.app.AppCompatActivity;
@@ -18,7 +15,6 @@ import android.util.Log;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
-import android.widget.AutoCompleteTextView;
 import android.widget.Button;
 import android.widget.Chronometer;
 import android.widget.EditText;
@@ -26,77 +22,78 @@ import android.widget.ImageButton;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
-
-import com.google.android.gms.maps.MapView;
-
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Scanner;
 
 public class MainActivity extends AppCompatActivity {
 
-    protected Button addLocation;
-    protected ImageButton settings;
-    protected LocationManager locationManager;
-    protected LocationListener locationListener;
-    protected TextView textView;
-    protected EditText newLocationName;
-    protected Spinner fromHere;
-    protected Spinner toHere;
-    protected long timeToDestination;
-    protected Chronometer chronometer;
-    protected boolean running;
-    protected long pauseOffset;
-    protected List<String> list;
-    protected File internalFileDir;
-    protected double longitude;
-    protected double latitude;
-    protected ImageButton savePlaces;
+    private TextView textView;
+    private EditText newLocationName;
+    private Spinner fromHere;
+    private Spinner toHere;
+    private int timeToDestination;
+    private Chronometer chronometer;
+    private boolean isTimerRunning;
+    private long pauseOffset;
+    private List<String> list;
+    private double longitude;
+    private double latitude;
+    private Place destination;
+    private Place start;
 
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
+    public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        final SharedPreferences prefs = getPreferences(Context.MODE_PRIVATE);
         setContentView(R.layout.activity_main);
-        savePlaces = findViewById(R.id.savePlaces);
+        ImageButton savePlaces = findViewById(R.id.savePlaces);
+        final DataManager manager = new DataManager(getFilesDir());
         textView = findViewById(R.id.textView);
-        settings = findViewById(R.id.settings);
+        Button resetButton = findViewById(R.id.resetButton);
+        ImageButton settings = findViewById(R.id.settings);
         chronometer = findViewById(R.id.chronometer);
-        addLocation = findViewById(R.id.addLocation);
+        Button addLocation = findViewById(R.id.addLocation);
         newLocationName = findViewById(R.id.newLocationName);
         fromHere = findViewById(R.id.fromHere);
         toHere = findViewById(R.id.toHere);
+        Button startJourney = findViewById(R.id.startJourney);
         list = new ArrayList<>();
-        running = false;
+        isTimerRunning = false;
         list.add("Select a location");
         latitude = -1;
         longitude = -1;
+        timeToDestination = -1;
 
-        final DataManager manager = new DataManager(getFilesDir());
-
-        savePlaces.setOnClickListener(new View.OnClickListener(){
-            @Override
-            public void onClick(View v){
-                try {
-                    manager.savePlace(new place(newLocationName.getText().toString().trim(), latitude, longitude));
-                }catch(Exception e){
-                    ModalDialogs.notifyException(MainActivity.this,e);
-                }
-            }
-        });
-
-        try{
-
+        try {
+            ArrayList<Place> places = manager.loadAllPlaces();
+           for(Place p: places){
+               list.add(p.getName());
+           }
         }catch(Exception e){
             ModalDialogs.notifyException(MainActivity.this,e);
         }
+        resetButton.setOnClickListener(new View.OnClickListener(){
+            @Override
+            public void onClick(View v) {
+                resetTimer();
+                displayResults();
+            }
+        });
+        savePlaces.setOnClickListener(new View.OnClickListener(){
+            @Override
+            public void onClick(View v){
 
+            }
+        });
+        startJourney.setOnClickListener(new View.OnClickListener(){
+            @Override
+            public void onClick(View v){
+                startTimer();
+                setJourney(manager);
+                displayCoords();
+
+            }
+        });
 
         //initializing spinners
         ArrayAdapter<String> dataAdapter = new ArrayAdapter<>(this,
@@ -112,7 +109,7 @@ public class MainActivity extends AppCompatActivity {
         addLocation.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                addPlace();
+                addPlace(manager);
             }
         });
         settings.setOnClickListener(new View.OnClickListener(){
@@ -122,13 +119,13 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
-        locationListener = new LocationListener() {
+        LocationManager locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        LocationListener locationListener = new LocationListener() {
             @Override
             public void onLocationChanged(Location location) {
                 latitude = location.getLatitude();
                 longitude = location.getLongitude();
-                checkLocation(location);
+                if (isTimerRunning) checkLocation(manager);
             }
 
             @Override
@@ -146,20 +143,25 @@ public class MainActivity extends AppCompatActivity {
 
             }
         };
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)
             return;
-        locationManager.requestLocationUpdates("gps", 5000, 0, locationListener);
+        locationManager.requestLocationUpdates("gps", 500, 0, locationListener);
 
     }
-
-    protected void addPlace() {
+    private void displayCoords(){
+        textView.setText("Latitude = "+latitude+", Longitude = "+longitude+" Goal "+destination.getLatitude()+", "+destination.getLongitude());
+    }
+    private void addPlace(DataManager manager) {
         String value = newLocationName.getText().toString().trim();
         if (!value.equals("")) {
-            String addLocationSuccess = " has been Added!";
             list.add(value);
-
-           place newPlace = new place(value,latitude,longitude);
+           try {
+                manager.savePlace(new Place(value,latitude,longitude));
+            }catch(Exception e){
+                ModalDialogs.notifyException(MainActivity.this,e);
+            }
             resetAddLocation();
+            String addLocationSuccess = " has been Added!";
             Toast.makeText(getApplicationContext(),""+value+addLocationSuccess,Toast.LENGTH_SHORT).show();
         }else{
             String addLocationNoName = "Please type a name for new location.";
@@ -170,69 +172,94 @@ public class MainActivity extends AppCompatActivity {
         newLocationName.onEditorAction(EditorInfo.IME_ACTION_DONE);
         newLocationName.setText("");
     }
-    private void checkLocation(Location location){
-        Log.i("MainActivity", "checkLocation: ");
+    private void checkLocation(DataManager manager){
+        Log.i("MainActivity", "checkLocation: "+destination.toString());
 
-        if(isAtDestination(location)){
-           String direction = ""+fromHere.getSelectedItem().toString()+toHere.getSelectedItem().toString();
-           String time = Long.toString(timeToDestination);
-           // prefs.edit().putString(direction, time).apply();
+        if(isAtDestination()){
+            resetTimer();
+            saveResults(manager);
+            displayJourney();
         }
     }
-    private boolean isAtDestination(Location location){
-        double locationLongitude =location.getLongitude();
-        double locationLatitude = location.getLatitude();
-
-        //TODO check if coordinates are equal to destination
-    return false;
+    private boolean isAtDestination(){
+        return destination.getLatitude()==latitude && destination.getLongitude()==longitude;
     }
 
-    public void startTimer(View view) {
-        if(!running){
+    public void startTimer() {
+        if(!isTimerRunning){
             chronometer.setBase(SystemClock.elapsedRealtime()- pauseOffset);
             chronometer.start();
-            running = true;
+            isTimerRunning = true;
             chronometer.setVisibility(View.VISIBLE);
-            displayJourney();
+        }
+    }
+    private void setJourney(DataManager manager){
+        try {
+            start = manager.openPlace(fromHere.getSelectedItem().toString());
+            destination = manager.openPlace(toHere.getSelectedItem().toString());
+        }catch(Exception e){
+            ModalDialogs.notifyException(MainActivity.this,e);
         }
     }
 
     private void displayJourney() {
-        textView.setText("From "+fromHere.getSelectedItem().toString()+" to "+toHere.getSelectedItem().toString());
+        String journey = "From "+fromHere.getSelectedItem().toString()+" to "+toHere.getSelectedItem().toString();
+        textView.setText(journey);
     }
 
     public void stopTimer(View view){
-        if(running){
-            timeToDestination = chronometer.getBase();
+        if(isTimerRunning){
             chronometer.stop();
             pauseOffset = SystemClock.elapsedRealtime() - chronometer.getBase();
-           running=false;
+           isTimerRunning =false;
         }
     }
-    public void resetTimer(View view){
-        if(running) {
+    public void resetTimer(){
+        if(isTimerRunning) {
+            Log.i("MainActivity", "Time: "+chronometer.getBase());
+            chronometerSeconds(chronometer);
+
             chronometer.stop();
-            running = false;
-            displayResults();
-            saveResults();
+            isTimerRunning = false;
+
         }
         chronometer.setBase(SystemClock.elapsedRealtime());
         pauseOffset = 0;
 
     }
 
-    private void saveResults() {
-        //TODO save time and journey together
+    private void saveResults(DataManager manager) {
+        try {
+            manager.savePath(new Path(start, destination, timeToDestination));
+        }catch(Exception e){
+            ModalDialogs.notifyException(MainActivity.this,e);
+        }
 
     }
 
     private void displayResults() {
-        textView.setText("Walked from "+fromHere.getSelectedItem().toString()+" to "+toHere.getSelectedItem().toString()+" in "+chronometer.getText());
+        String results ="Walked from "+fromHere.getSelectedItem().toString()+" to "+toHere.getSelectedItem().toString()+" in "+chronometer.getText();
+        textView.setText(results);
     }
 
     public void openSettings() {
         Intent intent = new Intent(this,SettingsActivity1.class);
         startActivity(intent);
+    }
+    public int chronometerSeconds(Chronometer c){
+        //credit to https://stackoverflow.com/questions/526524/android-get-time-of-chronometer-widget
+        int seconds = 0;
+
+        String chrono = c.getText().toString();
+        String array[] = chrono.split(":");
+        if (array.length == 2) {
+            seconds = Integer.parseInt(array[0]) * 60  + Integer.parseInt(array[1]);
+        } else if (array.length == 3) {
+            seconds = Integer.parseInt(array[0]) * 60 * 60
+                    + Integer.parseInt(array[1]) * 60
+                    + Integer.parseInt(array[2]);
+        }
+        return seconds;
     }
 
 
